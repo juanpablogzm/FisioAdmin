@@ -7,11 +7,20 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   PieChart, Pie, Cell, ResponsiveContainer, AreaChart, Area,
 } from 'recharts';
-import { formatCalendarDate, formatCurrency } from '../../utils/format';
+import { formatCalendarDate, formatCurrency, formatTime, getAppointmentTypeLabel, getLocalDateISO } from '../../utils/format';
 import { formatLastActivity, formatTimestamp } from '../../utils/activity';
 import { isAppointmentPaid, needsPayment, paymentDateOf } from '../../utils/appointmentWorkflow';
 
 const COLORS = ['#2563eb', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
+const CALENDAR_DAYS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+const CALENDAR_MONTHS = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+const APPOINTMENT_STATUS_META: Record<Appointment['status'], { label: string; eventClass: string; badgeClass: string; dotClass: string }> = {
+  scheduled: { label: 'Programada', eventClass: 'bg-sky-100 text-sky-800 dark:bg-sky-500/20 dark:text-sky-200', badgeClass: 'bg-sky-100 text-sky-800 dark:bg-sky-500/20 dark:text-sky-200', dotClass: 'bg-sky-400' },
+  confirmed: { label: 'Confirmada', eventClass: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200', badgeClass: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200', dotClass: 'bg-emerald-400' },
+  completed: { label: 'Completada', eventClass: 'bg-violet-100 text-violet-800 dark:bg-violet-500/20 dark:text-violet-200', badgeClass: 'bg-violet-100 text-violet-800 dark:bg-violet-500/20 dark:text-violet-200', dotClass: 'bg-violet-400' },
+  cancelled: { label: 'Cancelada', eventClass: 'bg-rose-100 text-rose-800 dark:bg-rose-500/20 dark:text-rose-200', badgeClass: 'bg-rose-100 text-rose-800 dark:bg-rose-500/20 dark:text-rose-200', dotClass: 'bg-rose-400' },
+  'no-show': { label: 'No asistió', eventClass: 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-200', badgeClass: 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-200', dotClass: 'bg-amber-400' },
+};
 
 type TimeRange = 'week' | 'month' | 'year' | 'all' | 'custom';
 
@@ -56,6 +65,11 @@ export function UserMetrics({ therapistId, therapistName }: { therapistId: strin
   const [activitiesLoading, setActivitiesLoading] = useState(true);
   const [activityError, setActivityError] = useState('');
   const [refreshTick, setRefreshTick] = useState(0);
+  const [agendaMonth, setAgendaMonth] = useState(() => {
+    const today = new Date();
+    return new Date(today.getFullYear(), today.getMonth(), 1);
+  });
+  const [selectedAgendaDate, setSelectedAgendaDate] = useState(getLocalDateISO());
 
   useEffect(() => {
     let active = true;
@@ -98,6 +112,40 @@ export function UserMetrics({ therapistId, therapistName }: { therapistId: strin
     })
     .sort((a, b) => paymentDateOf(b).getTime() - paymentDateOf(a).getTime()), [appointments, selectedRange]);
   const appointmentsWithRecordedAmount = useMemo(() => filteredAppointments.filter(appointment => parseAmount(appointment.amount) > 0), [filteredAppointments]);
+  const calendarAppointments = useMemo(() => {
+    return appointments.slice().sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime));
+  }, [appointments]);
+  const calendarAppointmentsByDate = useMemo(() => {
+    const map = new Map<string, Appointment[]>();
+    calendarAppointments.forEach(appointment => {
+      const appointmentsForDay = map.get(appointment.date) || [];
+      appointmentsForDay.push(appointment);
+      map.set(appointment.date, appointmentsForDay);
+    });
+    return map;
+  }, [calendarAppointments]);
+  const agendaCalendar = useMemo(() => {
+    const year = agendaMonth.getFullYear();
+    const month = agendaMonth.getMonth();
+    const firstDayOffset = (new Date(year, month, 1).getDay() + 6) % 7;
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    return {
+      year,
+      month,
+      days: [
+        ...Array.from({ length: firstDayOffset }, () => null as number | null),
+        ...Array.from({ length: daysInMonth }, (_, index) => index + 1),
+      ],
+    };
+  }, [agendaMonth]);
+  const selectedCalendarAppointments = useMemo(
+    () => calendarAppointmentsByDate.get(selectedAgendaDate) || [],
+    [calendarAppointmentsByDate, selectedAgendaDate],
+  );
+  const pendingSessionCount = useMemo(() => {
+    const today = getLocalDateISO();
+    return appointments.filter(appointment => appointment.date >= today && ['scheduled', 'confirmed'].includes(appointment.status)).length;
+  }, [appointments]);
 
   const metrics = useMemo(() => {
     const completed = filteredAppointments.filter(a => a.status === 'completed');
@@ -108,14 +156,14 @@ export function UserMetrics({ therapistId, therapistName }: { therapistId: strin
     const noShows = appointmentsInRange.filter(a => a.status === 'no-show').length;
     const attendedOrMissed = completed.length + noShows;
     const attendanceRate = attendedOrMissed ? Math.round((completed.length / attendedOrMissed) * 100) : null;
-    const pendingSessions = appointmentsInRange.filter(a => ['scheduled', 'confirmed'].includes(a.status)).length;
+    const pendingSessions = pendingSessionCount;
     const averageTicket = appointmentsWithRecordedAmount.length ? totalSales / appointmentsWithRecordedAmount.length : 0;
     const notesWithPain = completed.filter(a => Number.isFinite(a.sessionNote?.painBefore) && Number.isFinite(a.sessionNote?.painAfter));
     const averagePainChange = notesWithPain.length
       ? Math.round((notesWithPain.reduce((sum, a) => sum + ((a.sessionNote?.painAfter ?? 0) - (a.sessionNote?.painBefore ?? 0)), 0) / notesWithPain.length) * 10) / 10
       : null;
     return { totalSales, totalAppointments, uniquePatients, completedSessions: completed.length, documentedSessions, attendanceRate, averagePainChange, noShows, pendingSessions, averageTicket };
-  }, [filteredAppointments, appointmentsInRange, appointmentsWithRecordedAmount]);
+  }, [filteredAppointments, appointmentsInRange, appointmentsWithRecordedAmount, pendingSessionCount]);
 
   const clinicalMetrics = useMemo(() => {
     const relevant = filteredProgress;
@@ -292,10 +340,10 @@ export function UserMetrics({ therapistId, therapistName }: { therapistId: strin
             <p className="text-2xl font-bold text-gray-900 mt-1">{metrics.documentedSessions}/{metrics.completedSessions}</p>
             <p className="mt-1 text-xs text-gray-500">{metrics.completedSessions ? Math.round((metrics.documentedSessions / metrics.completedSessions) * 100) : 0}% documentadas</p>
           </div>
-          <div className="p-4 bg-gradient-to-br from-sky-500/10 to-sky-500/5 rounded-xl border border-sky-500/20">
-            <p className="text-sm text-gray-500 font-medium">Agenda pendiente</p>
-            <p className="text-2xl font-bold text-gray-900 mt-1">{metrics.pendingSessions}</p>
-            <p className="mt-1 text-xs text-gray-500">{metrics.noShows} inasistencias</p>
+          <div className="rounded-xl border border-sky-500/20 bg-gradient-to-br from-sky-500/10 to-sky-500/5 p-4 dark:border-sky-500/30 dark:from-sky-500/20 dark:to-sky-500/10">
+            <p className="text-sm font-medium text-gray-500 dark:text-slate-300">Agenda pendiente</p>
+            <p className="mt-1 text-2xl font-bold text-gray-900 dark:text-white">{metrics.pendingSessions}</p>
+            <p className="mt-1 text-xs text-gray-500 dark:text-slate-400">Citas futuras · {metrics.noShows} inasistencias en el período</p>
           </div>
           <div className="p-4 bg-gradient-to-br from-violet-500/10 to-violet-500/5 rounded-xl border border-violet-500/20">
             <p className="text-sm text-gray-500 font-medium">Ticket promedio</p>
@@ -309,6 +357,90 @@ export function UserMetrics({ therapistId, therapistName }: { therapistId: strin
           <div className="rounded-xl bg-slate-50 p-3 dark:bg-slate-800"><p className="text-xs font-semibold text-slate-400">Recuperación promedio</p><p className="mt-1 text-xl font-extrabold text-slate-900 dark:text-white">{clinicalMetrics.averageRecovery}%</p></div>
           <div className="rounded-xl bg-slate-50 p-3 dark:bg-slate-800"><p className="text-xs font-semibold text-slate-400">Cambio de dolor por sesión</p><p className="mt-1 text-xl font-extrabold text-slate-900 dark:text-white">{metrics.averagePainChange === null ? 'Sin datos' : `${metrics.averagePainChange > 0 ? '+' : ''}${metrics.averagePainChange}`}</p></div>
           <div className="rounded-xl bg-slate-50 p-3 dark:bg-slate-800"><p className="text-xs font-semibold text-slate-400">Pacientes atendidos</p><p className="mt-1 text-xl font-extrabold text-slate-900 dark:text-white">{metrics.uniquePatients}</p><p className="mt-1 text-[10px] text-slate-400">En el período</p></div>
+        </div>
+
+        <div className="mb-6 overflow-hidden rounded-xl border border-sky-200 bg-white dark:border-sky-900/70 dark:bg-slate-900">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-sky-100 bg-sky-50 px-4 py-3 dark:border-sky-900/70 dark:bg-sky-950/40">
+            <div>
+              <h4 className="text-sm font-semibold text-sky-900 dark:text-sky-100">Agenda de citas</h4>
+              <p className="mt-0.5 text-xs text-sky-700 dark:text-sky-300">Todas las citas registradas para este terapeuta.</p>
+            </div>
+            <span className="rounded-full bg-white px-2.5 py-1 text-xs font-bold text-sky-700 shadow-sm dark:bg-slate-800 dark:text-sky-200">{calendarAppointments.length} registradas</span>
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.65fr)_minmax(220px,0.85fr)]">
+            <div className="p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <button
+                  type="button"
+                  aria-label="Mes anterior"
+                  onClick={() => setAgendaMonth(current => new Date(current.getFullYear(), current.getMonth() - 1, 1))}
+                  className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-primary dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-sky-200"
+                >
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="m15 19-7-7 7-7" /></svg>
+                </button>
+                <p className="text-sm font-bold text-slate-800 dark:text-white">{CALENDAR_MONTHS[agendaCalendar.month]} {agendaCalendar.year}</p>
+                <button
+                  type="button"
+                  aria-label="Mes siguiente"
+                  onClick={() => setAgendaMonth(current => new Date(current.getFullYear(), current.getMonth() + 1, 1))}
+                  className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-primary dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-sky-200"
+                >
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="m9 5 7 7-7 7" /></svg>
+                </button>
+              </div>
+              <div className="grid grid-cols-7 gap-1">
+                {CALENDAR_DAYS.map(day => <div key={day} className="py-1 text-center text-[10px] font-semibold text-slate-400 dark:text-slate-500">{day}</div>)}
+                {agendaCalendar.days.map((day, index) => {
+                  if (day === null) return <div key={`agenda-empty-${index}`} className="min-h-16 rounded-lg" />;
+                  const iso = `${agendaCalendar.year}-${String(agendaCalendar.month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                  const dayAppointments = calendarAppointmentsByDate.get(iso) || [];
+                  const isSelected = iso === selectedAgendaDate;
+                  const isToday = iso === getLocalDateISO();
+                  return (
+                    <button
+                      key={iso}
+                      type="button"
+                      onClick={() => setSelectedAgendaDate(iso)}
+                      className={`min-h-16 rounded-lg border p-1 text-left transition-colors ${
+                        isSelected ? 'border-primary bg-primary-light ring-1 ring-primary/20 dark:border-sky-400 dark:bg-sky-500/20' : isToday ? 'border-sky-300 bg-sky-50 dark:border-sky-700 dark:bg-sky-950/50' : 'border-slate-100 hover:border-sky-300 hover:bg-sky-50 dark:border-slate-700 dark:hover:border-sky-700 dark:hover:bg-slate-800'
+                      }`}
+                    >
+                      <span className={`block text-xs font-semibold ${isToday ? 'text-primary dark:text-sky-300' : 'text-slate-600 dark:text-slate-300'}`}>{day}</span>
+                      {dayAppointments.slice(0, 2).map(appointment => (
+                        <span key={appointment.id} className={`mt-1 block truncate rounded px-1 py-0.5 text-[9px] font-medium ${APPOINTMENT_STATUS_META[appointment.status].eventClass}`} title={`${appointment.startTime} · ${appointment.patientName}`}>
+                          {appointment.startTime} {appointment.patientName.split(' ')[0]}
+                        </span>
+                      ))}
+                      {dayAppointments.length > 2 && <span className="block px-1 text-[9px] font-semibold text-slate-400 dark:text-slate-500">+{dayAppointments.length - 2}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400">
+                {Object.entries(APPOINTMENT_STATUS_META).map(([status, meta]) => <span key={status} className="flex items-center gap-1"><i className={`h-2 w-2 rounded-full ${meta.dotClass}`} />{meta.label}</span>)}
+              </div>
+            </div>
+            <div className="border-t border-slate-100 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/70 lg:border-l lg:border-t-0">
+              <p className="text-sm font-semibold capitalize text-slate-800 dark:text-white">{formatCalendarDate(selectedAgendaDate, { weekday: 'long', day: 'numeric', month: 'long' })}</p>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{selectedCalendarAppointments.length} {selectedCalendarAppointments.length === 1 ? 'cita' : 'citas'}</p>
+              {selectedCalendarAppointments.length === 0 ? (
+                <p className="py-8 text-center text-xs text-slate-400 dark:text-slate-500">No hay citas registradas para este día.</p>
+              ) : (
+                <div className="mt-4 space-y-2">
+                  {selectedCalendarAppointments.map(appointment => {
+                    const status = APPOINTMENT_STATUS_META[appointment.status];
+                    return (
+                      <div key={appointment.id} className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+                        <div className="flex items-center justify-between gap-2"><span className="text-sm font-bold text-slate-800 dark:text-white">{formatTime(appointment.startTime)}</span><span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${status.badgeClass}`}>{status.label}</span></div>
+                        <p className="mt-1 text-sm font-medium text-slate-700 dark:text-slate-200">{appointment.patientName}</p>
+                        <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{getAppointmentTypeLabel(appointment.type)} · hasta {formatTime(appointment.endTime)}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
         <div className="mb-6 grid grid-cols-2 lg:grid-cols-4 gap-4">
