@@ -1,5 +1,6 @@
 # FisioAdmin - Clinic Management System for Physiotherapy
 
+
 A web application for managing a physiotherapy practice, built with **React 19**, **Tailwind CSS v4** and **Vite**.
 
 Elegant design focused on the healthcare field, using an **olive green** palette with earthy tones (sage, ochre and clay) that convey calm and professional trust. Fully responsive: the sidebar collapses on mobile and all grids adapt to screen size.
